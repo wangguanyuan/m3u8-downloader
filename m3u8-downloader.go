@@ -1,7 +1,7 @@
-//@author:llychao<lychao_vip@163.com>
-//@contributor: Junyi<me@junyi.pw>
-//@date:2020-02-18
-//@功能:golang m3u8 video Downloader
+// @author:llychao<lychao_vip@163.com>
+// @contributor: Junyi<me@junyi.pw>
+// @date:2020-02-18
+// @功能:golang m3u8 video Downloader
 package main
 
 import (
@@ -38,7 +38,7 @@ const (
 var (
 	// 命令行参数
 	urlFlag = flag.String("u", "", "m3u8下载地址(http(s)://url/xx/xx/index.m3u8)")
-	nFlag   = flag.Int("n", 16, "下载线程数(默认16)")
+	nFlag   = flag.Int("n", 32, "下载线程数(默认16)")
 	htFlag  = flag.String("ht", "apiv1", "设置getHost的方式(apiv1: `http(s):// + url.Host + filepath.Dir(url.Path)`; apiv2: `http(s)://+ u.Host`")
 	oFlag   = flag.String("o", "movie", "自定义文件名(默认为movie)不带后缀")
 	cFlag   = flag.String("c", "", "自定义请求cookie")
@@ -46,16 +46,12 @@ var (
 	spFlag  = flag.String("sp", "", "文件保存的绝对路径(默认为当前路径,建议默认值)")
 
 	logger *log.Logger
-	ro     = &grequests.RequestOptions{
-		UserAgent:      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.88 Safari/537.36",
-		RequestTimeout: HEAD_TIMEOUT,
-		Headers: map[string]string{
-			"Connection":      "keep-alive",
-			"Accept":          "*/*",
-			"Accept-Encoding": "*",
-			"Accept-Language": "zh-CN,zh;q=0.9, en;q=0.8, de;q=0.7, *;q=0.5",
-		},
-	}
+	ro     = &grequests.RequestOptions{}
+
+	// 记录总下载bytes
+	totalBytes int64
+	// 开始下载的时间戳
+	startTs int64
 )
 
 // TsInfo 用于保存 ts 文件的下载地址和文件名
@@ -73,6 +69,18 @@ func main() {
 }
 
 func Run() {
+
+	// 设置HTTP代理地址
+	proxyURL := "http://127.0.0.1:7890"
+
+	// 创建HTTP代理URL
+	proxyURLParsed, err := url.Parse(proxyURL)
+	if err != nil {
+		fmt.Println("无法解析代理URL:", err)
+		return
+	}
+	ro.Proxies = map[string]*url.URL{"https": proxyURLParsed, "http": proxyURLParsed}
+
 	msgTpl := "[功能]:多线程下载直播流m3u8视屏\n[提醒]:下载失败，请使用 -ht=apiv2 \n[提醒]:下载失败，m3u8 地址可能存在嵌套\n[提醒]:进度条中途下载失败，可重复执行"
 	fmt.Println(msgTpl)
 	runtime.GOMAXPROCS(runtime.NumCPU())
@@ -88,7 +96,7 @@ func Run() {
 	insecure := *sFlag
 	savePath := *spFlag
 
-	ro.Headers["Referer"] = getHost(m3u8Url, "apiv2")
+	//ro.Headers["Referer"] = getHost(m3u8Url, "apiv2")
 	if insecure != 0 {
 		ro.InsecureSkipVerify = true
 	}
@@ -112,16 +120,25 @@ func Run() {
 	}
 
 	// 2、解析m3u8
+	fmt.Println("m3u8Url", m3u8Url)
 	m3u8Host := getHost(m3u8Url, hostType)
+	m3u8Host = "g7sun940ri.sw-cdnstream.com"
+	fmt.Println("m3u8Host", m3u8Host)
 	m3u8Body := getM3u8Body(m3u8Url)
+	fmt.Println("m3u8Body", m3u8Body)
+	if strings.Contains(m3u8Body, "403 Forbidden") {
+		fmt.Println("403 Forbidden!")
+		return
+	}
 	//m3u8Body := getFromFile()
 	ts_key := getM3u8Key(m3u8Host, m3u8Body)
 	if ts_key != "" {
 		fmt.Printf("待解密 ts 文件 key : %s \n", ts_key)
 	}
+	fmt.Println("ts_key", ts_key)
 	ts_list := getTsList(m3u8Host, m3u8Body)
-	fmt.Println("待下载 ts 文件数量:", len(ts_list))
-
+	fmt.Println("待下载 ts 文件数量:", len(ts_list), ts_list)
+	time.Sleep(2 * time.Second)
 	// 3、下载ts文件到download_dir
 	downloader(ts_list, maxGoroutines, download_dir, ts_key)
 	if ok := checkTsDownDir(download_dir); !ok {
@@ -143,7 +160,13 @@ func getHost(Url, ht string) (host string) {
 	checkErr(err)
 	switch ht {
 	case "apiv1":
-		host = u.Scheme + "://" + u.Host + filepath.Dir(u.EscapedPath())
+		urlPath := u.EscapedPath()
+		// 去除最右端
+		rIndex := strings.LastIndex(urlPath, "/")
+		urlPath = urlPath[:rIndex]
+
+		host = u.Scheme + "://" + u.Host + urlPath
+
 	case "apiv2":
 		host = u.Scheme + "://" + u.Host
 	}
@@ -152,8 +175,10 @@ func getHost(Url, ht string) (host string) {
 
 // 获取m3u8地址的内容体
 func getM3u8Body(Url string) string {
+
 	r, err := grequests.Get(Url, ro)
 	checkErr(err)
+	fmt.Println("get", Url, "status", r.StatusCode)
 	return r.String()
 }
 
@@ -213,10 +238,17 @@ func getFromFile() string {
 // 下载ts文件
 // @modify: 2020-08-13 修复ts格式SyncByte合并不能播放问题
 func downloadTsFile(ts TsInfo, download_dir, key string, retries int) {
+	fmt.Println("downloadTsFile", download_dir, ts, key, retries)
+	if retries <= 0 {
+		fmt.Println("downloadTsFile too much retry", download_dir, ts, key, retries)
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
-			//fmt.Println("网络不稳定，正在进行断点持续下载")
-			downloadTsFile(ts, download_dir, key, retries-1)
+			fmt.Println("网络不稳定，正在进行断点持续下载, %+v", r)
+			if retries > 0 {
+				downloadTsFile(ts, download_dir, key, retries-1)
+			}
 		}
 	}()
 	curr_path_file := fmt.Sprintf("%s/%s", download_dir, ts.Name)
@@ -226,7 +258,9 @@ func downloadTsFile(ts TsInfo, download_dir, key string, retries int) {
 	}
 	res, err := grequests.Get(ts.Url, ro)
 	if err != nil || !res.Ok {
-		if retries > 0 {
+		fmt.Println("downloadTsFile get ", ts.Url, "err: ", err, "status: ", res.StatusCode)
+		// 403不重试
+		if retries > 0 && res.StatusCode != 403 {
 			downloadTsFile(ts, download_dir, key, retries-1)
 			return
 		} else {
@@ -237,6 +271,7 @@ func downloadTsFile(ts TsInfo, download_dir, key string, retries int) {
 	// 校验长度是否合法
 	var origData []byte
 	origData = res.Bytes()
+	totalBytes += int64(len(origData))
 	contentLen := 0
 	contentLenStr := res.Header.Get("Content-Length")
 	if contentLenStr != "" {
@@ -272,11 +307,12 @@ func downloadTsFile(ts TsInfo, download_dir, key string, retries int) {
 
 // downloader m3u8 下载器
 func downloader(tsList []TsInfo, maxGoroutines int, downloadDir string, key string) {
-	retry := 5 //单个 ts 下载重试次数
+	retry := 3 //单个 ts 下载重试次数
 	var wg sync.WaitGroup
 	limiter := make(chan struct{}, maxGoroutines) //chan struct 内存占用 0 bool 占用 1
 	tsLen := len(tsList)
 	downloadCount := 0
+	startTs = time.Now().Unix()
 	for _, ts := range tsList {
 		wg.Add(1)
 		limiter <- struct{}{}
@@ -327,8 +363,15 @@ func mergeTs(downloadDir string) string {
 // 进度条
 func DrawProgressBar(prefix string, proportion float32, width int, suffix ...string) {
 	pos := int(proportion * float32(width))
-	s := fmt.Sprintf("[%s] %s%*s %6.2f%% \t%s",
-		prefix, strings.Repeat("■", pos), width-pos, "", proportion*100, strings.Join(suffix, ""))
+	// 计算网速, mb/s
+	costTs := time.Now().Unix() - startTs
+	if costTs <= 0 {
+		costTs = 1
+	}
+	speed := float32(totalBytes) / float32(costTs) / 1024 / 1024
+
+	s := fmt.Sprintf("[%s] %s%*s %6.2f%% speed: %f MB/S \t%s",
+		prefix, strings.Repeat("■", pos), width-pos, "", proportion*100, speed, strings.Join(suffix, ""))
 	fmt.Print("\r" + s)
 }
 

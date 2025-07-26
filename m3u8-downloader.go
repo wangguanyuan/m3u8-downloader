@@ -37,13 +37,15 @@ const (
 
 var (
 	// 命令行参数
-	urlFlag = flag.String("u", "", "m3u8下载地址(http(s)://url/xx/xx/index.m3u8)")
-	nFlag   = flag.Int("n", 32, "下载线程数(默认16)")
-	htFlag  = flag.String("ht", "apiv1", "设置getHost的方式(apiv1: `http(s):// + url.Host + filepath.Dir(url.Path)`; apiv2: `http(s)://+ u.Host`")
-	oFlag   = flag.String("o", "movie", "自定义文件名(默认为movie)不带后缀")
-	cFlag   = flag.String("c", "", "自定义请求cookie")
-	sFlag   = flag.Int("s", 0, "是否允许不安全的请求(默认0)")
-	spFlag  = flag.String("sp", "", "文件保存的绝对路径(默认为当前路径,建议默认值)")
+	urlFlag  = flag.String("u", "", "m3u8下载地址(http(s)://url/xx/xx/index.m3u8)")
+	nFlag    = flag.Int("n", 32, "下载线程数(默认16)")
+	htFlag   = flag.String("ht", "apiv1", "设置getHost的方式(apiv1: `http(s):// + url.Host + filepath.Dir(url.Path)`; apiv2: `http(s)://+ u.Host`")
+	oFlag    = flag.String("o", "movie", "自定义文件名(默认为movie)不带后缀")
+	cFlag    = flag.String("c", "", "自定义请求cookie")
+	sFlag    = flag.Int("s", 0, "是否允许不安全的请求(默认0)")
+	spFlag   = flag.String("sp", "", "文件保存的绝对路径(默认为当前路径,建议默认值)")
+	fileFlag = flag.String("f", "", "m3u8内容的文件路径")
+	hostFlag = flag.String("host", "", "自定义host")
 
 	logger *log.Logger
 	ro     = &grequests.RequestOptions{}
@@ -95,19 +97,8 @@ func Run() {
 	cookie := *cFlag
 	insecure := *sFlag
 	savePath := *spFlag
+	m3u8FilePath := *fileFlag
 
-	//ro.Headers["Referer"] = getHost(m3u8Url, "apiv2")
-	if insecure != 0 {
-		ro.InsecureSkipVerify = true
-	}
-	// http 自定义 cookie
-	if cookie != "" {
-		ro.Headers["Cookie"] = cookie
-	}
-	if !strings.HasPrefix(m3u8Url, "http") || m3u8Url == "" {
-		flag.Usage()
-		return
-	}
 	var download_dir string
 	pwd, _ := os.Getwd()
 	if savePath != "" {
@@ -118,19 +109,39 @@ func Run() {
 	if isExist, _ := pathExists(download_dir); !isExist {
 		os.MkdirAll(download_dir, os.ModePerm)
 	}
+	var m3u8Body string
+	var m3u8Host string
+	if m3u8FilePath != "" {
+		// 从文件内容获取M3U8
+		m3u8Body = getFromFile(m3u8FilePath)
+		m3u8Host = *hostFlag
+	} else {
 
-	// 2、解析m3u8
-	fmt.Println("m3u8Url", m3u8Url)
-	m3u8Host := getHost(m3u8Url, hostType)
-	m3u8Host = "g7sun940ri.sw-cdnstream.com"
-	fmt.Println("m3u8Host", m3u8Host)
-	m3u8Body := getM3u8Body(m3u8Url)
-	fmt.Println("m3u8Body", m3u8Body)
-	if strings.Contains(m3u8Body, "403 Forbidden") {
-		fmt.Println("403 Forbidden!")
-		return
+		//ro.Headers["Referer"] = getHost(m3u8Url, "apiv2")
+		if insecure != 0 {
+			ro.InsecureSkipVerify = true
+		}
+		// http 自定义 cookie
+		if cookie != "" {
+			ro.Headers["Cookie"] = cookie
+		}
+		if !strings.HasPrefix(m3u8Url, "http") || m3u8Url == "" {
+			flag.Usage()
+			return
+		}
+
+		// 2、解析m3u8
+		fmt.Println("m3u8Url", m3u8Url)
+		m3u8Host = getHost(m3u8Url, hostType)
+		fmt.Println("m3u8Host", m3u8Host)
+		m3u8Body := getM3u8Body(m3u8Url)
+		fmt.Println("m3u8Body", m3u8Body)
+		if strings.Contains(m3u8Body, "403 Forbidden") {
+			fmt.Println("403 Forbidden!")
+			return
+		}
 	}
-	//m3u8Body := getFromFile()
+
 	ts_key := getM3u8Key(m3u8Host, m3u8Body)
 	if ts_key != "" {
 		fmt.Printf("待解密 ts 文件 key : %s \n", ts_key)
@@ -230,8 +241,8 @@ func getTsList(host, body string) (tsList []TsInfo) {
 	return
 }
 
-func getFromFile() string {
-	data, _ := ioutil.ReadFile("./ts.txt")
+func getFromFile(filePath string) string {
+	data, _ := ioutil.ReadFile(filePath)
 	return string(data)
 }
 
